@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Subnet Calculator</title>
+<style>
+  body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background: linear-gradient(135deg, #667eea, #764ba2);
+    color: #ffffff;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 2rem;
+  }
+  h1 {
+    margin-bottom: 1rem;
+  }
+  .log {
+    background: rgba(0, 0, 0, 0.3);
+    padding: 1rem;
+    border-radius: 8px;
+    width: 100%;
+    max-width: 700px;
+    min-height: 200px;
+    font-family: monospace;
+    overflow-y: auto;
+    margin-top: 1rem;
+  }
+  button {
+    background-color: #764ba2;
+    color: white;
+    border: none;
+    padding: 0.75rem 1rem;
+    margin-top: 1rem;
+    font-size: 1rem;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background 0.3s ease;
+  }
+  button:hover {
+    background-color: #5a3680;
+  }
+  label {
+    margin-top: 1rem;
+    display: block;
+  }
+  input, select {
+    padding: 0.5rem;
+    margin-top: 0.3rem;
+    width: 300px;
+    border-radius: 4px;
+    border: none;
+    font-size: 1rem;
+  }
+</style>
+</head>
+<body>
+<h1>Subnet Calculator</h1>
+
+<label for="parentPrefix">Parent CIDR Prefix (e.g. 192.168.0.0/22):</label>
+<input type="text" id="parentPrefix" value="192.168.0.0/22" />
+
+<label for="requiredIPs">Required Number of IPs:</label>
+<input type="number" id="requiredIPs" value="800" min="1" />
+
+<button id="calculateBtn">Calculate Subnets</button>
+
+<div class="log" id="log"></div>
+
+<script type="module">
+// Simple Netmask class replacement for base and broadcast calculation
+class Netmask {
+  constructor(cidr) {
+    if (typeof cidr !== 'string') throw new Error('Netmask requires CIDR string');
+    const [ip, maskLength] = cidr.split('/');
+    this.base = ip;
+    this.maskLength = parseInt(maskLength, 10);
+    if (this.maskLength < 0 || this.maskLength > 32) throw new Error('Invalid mask length');
+    this._baseInt = ipToInt(this.base);
+    this.size = 2 ** (32 - this.maskLength);
+    this.broadcast = intToIp(this._baseInt + this.size - 1);
+  }
+}
+
+// Convert IP string to integer
+function ipToInt(ip) {
+  return ip.split('.').reduce((acc, octet) => (acc << 8) + Number(octet), 0) >>> 0;
+}
+
+// Convert integer to IP string
+function intToIp(int) {
+  return [
+    (int >>> 24) & 0xff,
+    (int >>> 16) & 0xff,
+    (int >>> 8) & 0xff,
+    int & 0xff,
+  ].join('.');
+}
+
+// Calculate subnets for required IPs within parent prefix
+export function calculateSubnets(parentPrefix, requiredIPs) {
+  if (typeof parentPrefix !== 'string' || typeof requiredIPs !== 'number' || requiredIPs <= 0) {
+    throw new Error('Invalid input: parentPrefix must be a string and requiredIPs must be a positive number');
+  }
+
+  const parent = new Netmask(parentPrefix);
+  const parentStart = ipToInt(parent.base);
+  const parentEnd = ipToInt(parent.broadcast);
+
+  let remaining = requiredIPs;
+  let currentIP = parentStart;
+  const subnets = [];
+
+  console.log(`Parent range: ${parent.base} to ${parent.broadcast} (${parent.maskLength})`);
+  console.log(`Required IPs: ${requiredIPs}`);
+
+  // Allocate subnets from the smallest mask (largest block) to /32
+  for (; remaining > 0 && currentIP <= parentEnd;) {
+    let allocated = false;
+    // Start CIDR from parent mask then increase mask (smaller subnets) up to 32
+    for (let cidr = parent.maskLength; cidr <= 32; cidr++) {
+      const total = 2 ** (32 - cidr);
+      let usable;
+
+      if (cidr === 31) {
+        usable = 2; // RFC 3021 for point-to-point
+      } else if (cidr === 32) {
+        usable = 1;
+      } else {
+        usable = total - 2;
+      }
+
+      if (currentIP + total - 1 > parentEnd) continue; // Subnet would overflow parent range
+
+      if (usable >= remaining) {
+        // Allocate subnet that fits remaining IPs
+        const subnet = `${intToIp(currentIP)}/${cidr}`;
+        console.log(`Allocating subnet: ${subnet} (usable: ${usable}) for remaining: ${remaining}`);
+
+        subnets.push(subnet);
+        remaining = 0;
+        currentIP += total;
+        allocated = true;
+        break;
+      } else if (usable < remaining) {
+        // Try to allocate the biggest possible block smaller than remaining to reduce iterations
+        if (cidr === 32 || cidr === 31) {
+          // smallest possible block, allocate if it fits (one or two IPs)
+          const subnet = `${intToIp(currentIP)}/${cidr}`;
+          if (usable > 0) {
+            console.log(`Allocating small subnet: ${subnet} (usable: ${usable}), reducing remaining ${remaining}`);
+            subnets.push(subnet);
+            remaining -= usable;
+            currentIP += total;
+            allocated = true;
+            break;
+          }
+        } else {
+          // allocate this block and continue
+          const subnet = `${intToIp(currentIP)}/${cidr}`;
+          console.log(`Allocating subnet: ${subnet} (usable: ${usable}), reducing remaining ${remaining}`);
+          subnets.push(subnet);
+          remaining -= usable;
+          currentIP += total;
+          allocated = true;
+          break;
+        }
+      }
+    }
+    if (!allocated) {
+      console.log(`No suitable subnet found for remaining=${remaining}, currentIP=${intToIp(currentIP)}`);
+      break;
+    }
+  }
+
+  if (remaining > 0) {
+    throw new Error(`Not enough space in parent prefix to allocate ${requiredIPs} IPs. Remaining: ${remaining}`);
+  }
+
+  return subnets;
+}
+
+// UI elements and handlers
+const logElement = document.getElementById('log');
+const parentPrefixInput = document.getElementById('parentPrefix');
+const requiredIPsInput = document.getElementById('requiredIPs');
+const calculateBtn = document.getElementById('calculateBtn');
+
+function log(msg) {
+  const p = document.createElement('pre');
+  p.textContent = msg;
+  logElement.appendChild(p);
+  logElement.scrollTop = logElement.scrollHeight;
+}
+
+calculateBtn.onclick = () => {
+  logElement.textContent = '';
+  const prefix = parentPrefixInput.value.trim();
+  const requiredIPs = Number(requiredIPsInput.value);
+
+  try {
+    const result = calculateSubnets(prefix, requiredIPs);
+    log(`\nAllocation complete. Subnets:\n${result.join('\n')}`);
+  } catch (error) {
+    log(`Error: ${error.message}`);
+  }
+};
+</script>
+</body>
+</html>
+

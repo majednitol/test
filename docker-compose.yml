@@ -1,0 +1,20 @@
+version: '3'
+
+services:
+  gobgp:
+    image: quay.io/osrg/gobgp
+    ports:
+      - "50051:50051"
+      - "179:179"
+    volumes:
+      - ./gobgp:/root/gobgp
+    command: gobgpd -f /root/gobgp/gobgpd.conf
+
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    depends_on:
+      - gobgp
+    environment:
+      - NODE_ENV=production
